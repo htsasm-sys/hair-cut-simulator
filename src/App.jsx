@@ -1,9 +1,16 @@
 import React, { useEffect, useRef, useState, useCallback } from "react";
 import * as THREE from "three";
+import { GLTFLoader } from "three/examples/jsm/loaders/GLTFLoader.js";
 import {
   Upload, RotateCw, RotateCcw, Printer, Save, Trash2, ChevronDown,
   Scissors, Sparkles, Layers, User, Wind, X, Check, RefreshCw,
 } from "lucide-react";
+
+const HEAD_MODEL_URL = "/models/head.glb";
+/* Target vertical extent (in scene units) the scanned head model is
+   normalized to, matching the footprint the rest of the scene (camera
+   distance, panel width, grid) was tuned against. */
+const HEAD_MODEL_TARGET_HEIGHT = 2.05;
 
 /* ------------------------------------------------------------------ */
 /* Constants / helpers                                                 */
@@ -150,27 +157,127 @@ function computeSurfaceScale(n, skull, hairline) {
 
 /* The actual scalp surface point in a given spherical direction, including
    the vertical head-shape stretch — this is the true "root" a hair
-   section should be anchored to. */
-function headSurfacePoint(theta, phi, skull, hairline) {
+   section should be anchored to. When a scanned head model (headData) is
+   loaded, its real per-direction radius is used as the base instead of a
+   unit sphere, so panels stay flush with the actual scalp. */
+function headSurfacePoint(theta, phi, skull, hairline, headData) {
   const n = sphToCart(1, theta, phi).normalize();
   const scale = computeSurfaceScale(n, skull, hairline);
+  if (headData) {
+    const baseRadius = lookupHeadRadius(headData, n);
+    return new THREE.Vector3(n.x * baseRadius * scale, n.y * baseRadius * scale, n.z * baseRadius * scale);
+  }
   return new THREE.Vector3(n.x * scale, n.y * scale * 1.12, n.z * scale);
 }
 
-/* Build a deformed head geometry from skull + hairline params */
-function buildHeadGeometry(skull, hairline) {
-  const geo = new THREE.SphereGeometry(1, 48, 36);
+/* Build a deformed head geometry from skull + hairline params. Deforms the
+   scanned head model (headData) when one is loaded, otherwise falls back
+   to a procedural sphere. */
+function buildHeadGeometry(skull, hairline, headData) {
+  const geo = headData ? headData.geometry.clone() : new THREE.SphereGeometry(1, 48, 36);
   const pos = geo.attributes.position;
   const v = new THREE.Vector3();
   for (let i = 0; i < pos.count; i++) {
     v.fromBufferAttribute(pos, i);
-    const n = v.clone().normalize();
+    const r = v.length();
+    if (headData && r < 1e-6) continue;
+    const n = headData ? v.clone().divideScalar(r) : v.clone().normalize();
     const scale = computeSurfaceScale(n, skull, hairline);
-    v.multiplyScalar(scale);
-    pos.setXYZ(i, v.x, v.y * 1.12, v.z);
+    if (headData) {
+      v.multiplyScalar(scale);
+      pos.setXYZ(i, v.x, v.y, v.z);
+    } else {
+      v.multiplyScalar(scale);
+      pos.setXYZ(i, v.x, v.y * 1.12, v.z);
+    }
   }
   geo.computeVertexNormals();
   return geo;
+}
+
+/* Precompute a per-vertex (direction, radius) lookup table for a centered
+   head mesh, used to approximate "what's the real scalp radius in this
+   direction" without an expensive per-query raycast. */
+function buildHeadLookup(geometry) {
+  const pos = geometry.attributes.position;
+  const count = pos.count;
+  const dirs = new Float32Array(count * 3);
+  const radii = new Float32Array(count);
+  const v = new THREE.Vector3();
+  for (let i = 0; i < count; i++) {
+    v.fromBufferAttribute(pos, i);
+    const r = v.length();
+    radii[i] = r;
+    if (r > 1e-6) {
+      dirs[i * 3] = v.x / r;
+      dirs[i * 3 + 1] = v.y / r;
+      dirs[i * 3 + 2] = v.z / r;
+    }
+  }
+  return { geometry, dirs, radii, count };
+}
+
+/* Weighted-nearest-direction radius lookup: finds the K vertices whose
+   direction from center is closest to n and blends their radii, giving a
+   smooth approximation of the scanned head's surface radius in direction n. */
+function lookupHeadRadius(headData, n) {
+  const { dirs, radii, count } = headData;
+  const K = 12;
+  const bestDot = new Float32Array(K).fill(-2);
+  const bestIdx = new Int32Array(K).fill(-1);
+  for (let i = 0; i < count; i++) {
+    const dot = dirs[i * 3] * n.x + dirs[i * 3 + 1] * n.y + dirs[i * 3 + 2] * n.z;
+    if (dot > bestDot[K - 1]) {
+      let j = K - 1;
+      while (j > 0 && bestDot[j - 1] < dot) {
+        bestDot[j] = bestDot[j - 1];
+        bestIdx[j] = bestIdx[j - 1];
+        j--;
+      }
+      bestDot[j] = dot;
+      bestIdx[j] = i;
+    }
+  }
+  let wSum = 0, rSum = 0;
+  for (let k = 0; k < K; k++) {
+    const idx = bestIdx[k];
+    if (idx < 0) continue;
+    const w = Math.pow(Math.max(bestDot[k], 0), 8);
+    wSum += w;
+    rSum += w * radii[idx];
+  }
+  return wSum > 0 ? rSum / wSum : 1;
+}
+
+/* Load the scanned head model (GLB), bake its node transforms into the
+   geometry, then center and uniformly scale it to the scene's expected
+   head footprint. Returns headData ready for buildHeadGeometry /
+   headSurfacePoint / lookupHeadRadius. */
+function loadScannedHead(onReady) {
+  new GLTFLoader().load(
+    HEAD_MODEL_URL,
+    (gltf) => {
+      gltf.scene.updateMatrixWorld(true);
+      let mesh = null;
+      gltf.scene.traverse((child) => {
+        if (!mesh && child.isMesh) mesh = child;
+      });
+      if (!mesh) return;
+      const geo = mesh.geometry.clone();
+      geo.applyMatrix4(mesh.matrixWorld);
+      geo.computeBoundingBox();
+      const box = geo.boundingBox;
+      const center = box.getCenter(new THREE.Vector3());
+      const size = box.getSize(new THREE.Vector3());
+      geo.translate(-center.x, -center.y, -center.z);
+      const scale = HEAD_MODEL_TARGET_HEIGHT / size.y;
+      geo.scale(scale, scale, scale);
+      geo.computeVertexNormals();
+      onReady(buildHeadLookup(geo));
+    },
+    undefined,
+    (err) => console.error("Failed to load scanned head model:", err)
+  );
 }
 
 /* ------------------------------------------------------------------ */
@@ -180,7 +287,9 @@ function buildHeadGeometry(skull, hairline) {
 export default function HairCutSimulator() {
   const mountRef = useRef(null);
   const threeRef = useRef({});
+  const headDataRef = useRef(null);
   const [ready, setReady] = useState(false);
+  const [headModelVersion, setHeadModelVersion] = useState(0);
 
   const [frontPhoto, setFrontPhoto] = useState(null);
   const [aiOptions, setAiOptions] = useState(null);
@@ -334,6 +443,19 @@ export default function HairCutSimulator() {
       headGroup, headMesh, headMat, headWire, cowlickMesh, panelObjs, mount,
     };
 
+    let cancelled = false;
+    loadScannedHead((headData) => {
+      if (cancelled) return;
+      headDataRef.current = headData;
+      const t = threeRef.current;
+      const newGeo = buildHeadGeometry(defaultSkull, defaultHairline, headData);
+      t.headMesh.geometry.dispose();
+      t.headMesh.geometry = newGeo;
+      t.headWire.geometry.dispose();
+      t.headWire.geometry = new THREE.WireframeGeometry(headData.geometry);
+      setHeadModelVersion((v) => v + 1);
+    });
+
     let raf;
     const loop = () => {
       renderer.render(scene, camera);
@@ -421,6 +543,7 @@ export default function HairCutSimulator() {
     setReady(true);
 
     return () => {
+      cancelled = true;
       cancelAnimationFrame(raf);
       ro.disconnect();
       el.removeEventListener("pointerdown", onDown);
@@ -439,14 +562,19 @@ export default function HairCutSimulator() {
   useEffect(() => {
     const t = threeRef.current;
     if (!t.headMesh) return;
-    const newGeo = buildHeadGeometry(skull, hairline);
+    const headData = headDataRef.current;
+    const newGeo = buildHeadGeometry(skull, hairline, headData);
     t.headMesh.geometry.dispose();
     t.headMesh.geometry = newGeo;
-    if (t.headWire) {
+    // For the scanned head (dense mesh), the contour wireframe is rebuilt
+    // once from the raw model on load rather than every slider tick, since
+    // WireframeGeometry over ~70k triangles is too costly to redo on every
+    // drag frame. The low-poly placeholder sphere can still afford it.
+    if (t.headWire && !headData) {
       t.headWire.geometry.dispose();
       t.headWire.geometry = new THREE.WireframeGeometry(newGeo);
     }
-  }, [skull, hairline, ready]);
+  }, [skull, hairline, ready, headModelVersion]);
 
   /* ---------------- update cowlick marker ---------------- */
   useEffect(() => {
@@ -454,13 +582,13 @@ export default function HairCutSimulator() {
     if (!t.cowlickMesh) return;
     const theta = Math.PI * (0.06 + hairFlow.cowlickTheta);
     const phi = Math.PI * (0.5 + hairFlow.cowlickPhi) - Math.PI / 2;
-    const surface = headSurfacePoint(theta, phi + Math.PI / 2, skull, hairline);
+    const surface = headSurfacePoint(theta, phi + Math.PI / 2, skull, hairline, headDataRef.current);
     const p = surface.clone().multiplyScalar(1.02);
     t.cowlickMesh.position.copy(p);
     t.cowlickMesh.lookAt(p.clone().multiplyScalar(2));
     t.cowlickMesh.rotateX(Math.PI / 2);
     t.cowlickMesh.material.color.set(hairFlow.cowlickDir === "cw" ? 0xe11d48 : 0x2563eb);
-  }, [hairFlow, skull, hairline, ready]);
+  }, [hairFlow, skull, hairline, ready, headModelVersion]);
 
   /* ---------------- update section panels + cutlines ---------------- */
   useEffect(() => {
@@ -471,7 +599,7 @@ export default function HairCutSimulator() {
     SECTIONS.forEach((s) => {
       const p = t.panelObjs[s.id];
       const sec = sections[s.id];
-      const anchor = headSurfacePoint(s.anchor.theta, s.anchor.phi + Math.PI / 2, skull, hairline);
+      const anchor = headSurfacePoint(s.anchor.theta, s.anchor.phi + Math.PI / 2, skull, hairline, headDataRef.current);
       p.grp.position.copy(anchor);
 
       // orientation: base outward normal (from scalp surface), tilt by elevation + overdirection
@@ -568,7 +696,7 @@ export default function HairCutSimulator() {
       }
       p.directionSprite.position.set(PANEL_W * 0.72, -lengthUnits * 0.5, 0.03);
     });
-  }, [sections, curl, sliceMode, viewMode, skull, hairline, ready]);
+  }, [sections, curl, sliceMode, viewMode, skull, hairline, ready, headModelVersion]);
 
   /* ---------------- photo upload -> mock AI prediction ---------------- */
   const onPhotoUpload = (e) => {
