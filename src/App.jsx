@@ -68,63 +68,6 @@ const sphToCart = (r, theta, phi) => new THREE.Vector3(
 const PANEL_W = 0.55;
 const BAR_T = 0.02;
 
-/* Japanese technique name by elevation angle, matching textbook convention */
-function getTechniqueLabel(elevation) {
-  if (elevation < 20) return "ワンレングス";
-  if (elevation < 50) return "ローレイヤー";
-  if (elevation < 95) return "グラデーション(G)";
-  if (elevation < 125) return "スクエアレイヤー";
-  return "ハイレイヤー";
-}
-/* Over-direction / slice-tilt instruction label */
-function getDirectionLabel(overDirection, sliceTilt) {
-  if (overDirection > 12) return "前にダイレクション";
-  if (overDirection < -12) return "後ろにダイレクション";
-  if (sliceTilt > 8) return "独立した前上がり";
-  if (sliceTilt < -8) return "独立した前下がり";
-  return "独立(パラレル)";
-}
-
-/* Rounded-pill Japanese text label rendered to a canvas and used as a
-   billboard sprite, so it always faces the camera and reads cleanly
-   regardless of head/panel orientation. */
-function makeTextSprite(text, opts = {}) {
-  const { fg = "#be123c", bg = "#ffffff", border = "#e11d48", fontPx = 44, padX = 22, padY = 14 } = opts;
-  const canvas = document.createElement("canvas");
-  const ctx = canvas.getContext("2d");
-  const font = `700 ${fontPx}px "Hiragino Sans", "Noto Sans JP", sans-serif`;
-  ctx.font = font;
-  const w = Math.ceil(ctx.measureText(text).width) + padX * 2;
-  const h = fontPx + padY * 2;
-  canvas.width = w; canvas.height = h;
-  ctx.font = font;
-  ctx.textBaseline = "middle";
-  ctx.textAlign = "center";
-  const r = h / 2;
-  ctx.beginPath();
-  ctx.moveTo(r, 2);
-  ctx.arcTo(w - 2, 2, w - 2, h - 2, r);
-  ctx.arcTo(w - 2, h - 2, 2, h - 2, r);
-  ctx.arcTo(2, h - 2, 2, 2, r);
-  ctx.arcTo(2, 2, w - 2, 2, r);
-  ctx.closePath();
-  ctx.fillStyle = bg;
-  ctx.fill();
-  ctx.lineWidth = 5;
-  ctx.strokeStyle = border;
-  ctx.stroke();
-  ctx.fillStyle = fg;
-  ctx.fillText(text, w / 2, h / 2 + 2);
-  const tex = new THREE.CanvasTexture(canvas);
-  tex.needsUpdate = true;
-  const mat = new THREE.SpriteMaterial({ map: tex, transparent: true, depthTest: false });
-  const sprite = new THREE.Sprite(mat);
-  const s = 0.0055;
-  sprite.scale.set(w * s, h * s, 1);
-  sprite.renderOrder = 999;
-  return sprite;
-}
-
 /* Shared scalp-surface scale function used by both the head mesh and any
    anchor point (section panels, cowlick) so nothing gets embedded inside
    the (non-spherical) deformed head. */
@@ -432,16 +375,10 @@ export default function HairCutSimulator() {
       arrowGroup.visible = false;
       grp.add(arrowGroup);
 
-      const techniqueSprite = makeTextSprite("グラデーション(G)", { fg: "#be123c", border: "#e11d48" });
-      const directionSprite = makeTextSprite("独立(パラレル)", { fg: "#1d4ed8", border: "#3b82f6" });
-      grp.add(techniqueSprite, directionSprite);
-
       panelGroup.add(grp);
       panelObjs[s.id] = {
         grp, mesh, cutLine, leftBar, rightBar, bottomBar,
         arrowGroup, arrowTube, arrowHead, arrowMat,
-        techniqueSprite, directionSprite,
-        lastTechnique: "グラデーション(G)", lastDirection: "独立(パラレル)",
       };
     });
 
@@ -678,30 +615,6 @@ export default function HairCutSimulator() {
       } else {
         p.arrowGroup.visible = false;
       }
-
-      // technique-name label near the panel tip (rebuilt only when the text changes)
-      const techniqueText = getTechniqueLabel(sec.elevation);
-      if (techniqueText !== p.lastTechnique) {
-        p.grp.remove(p.techniqueSprite);
-        p.techniqueSprite.material.map.dispose();
-        p.techniqueSprite.material.dispose();
-        p.techniqueSprite = makeTextSprite(techniqueText, { fg: "#be123c", border: "#e11d48" });
-        p.grp.add(p.techniqueSprite);
-        p.lastTechnique = techniqueText;
-      }
-      p.techniqueSprite.position.set(0, tip - 0.14, 0.03);
-
-      // direction-instruction label beside the panel
-      const directionText = getDirectionLabel(sec.overDirection, sec.sliceTilt);
-      if (directionText !== p.lastDirection) {
-        p.grp.remove(p.directionSprite);
-        p.directionSprite.material.map.dispose();
-        p.directionSprite.material.dispose();
-        p.directionSprite = makeTextSprite(directionText, { fg: "#1d4ed8", border: "#3b82f6" });
-        p.grp.add(p.directionSprite);
-        p.lastDirection = directionText;
-      }
-      p.directionSprite.position.set(PANEL_W * 0.72, -lengthUnits * 0.5, 0.03);
     });
   }, [sections, curl, sliceMode, viewMode, skull, hairline, ready, headModelVersion]);
 
