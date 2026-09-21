@@ -249,35 +249,42 @@ function lookupHeadRadius(headData, n) {
   return wSum > 0 ? rSum / wSum : 1;
 }
 
-/* Load the scanned head model (GLB), bake its node transforms into the
-   geometry, then center and uniformly scale it to the scene's expected
-   head footprint. Returns headData ready for buildHeadGeometry /
-   headSurfacePoint / lookupHeadRadius. */
+/* Center and uniformly scale the loaded glTF's first mesh to the scene's
+   expected head footprint, then build the radius lookup table for it. */
+function processScannedHead(gltf, onReady) {
+  gltf.scene.updateMatrixWorld(true);
+  let mesh = null;
+  gltf.scene.traverse((child) => {
+    if (!mesh && child.isMesh) mesh = child;
+  });
+  if (!mesh) return;
+  const geo = mesh.geometry.clone();
+  geo.applyMatrix4(mesh.matrixWorld);
+  geo.computeBoundingBox();
+  const box = geo.boundingBox;
+  const center = box.getCenter(new THREE.Vector3());
+  const size = box.getSize(new THREE.Vector3());
+  geo.translate(-center.x, -center.y, -center.z);
+  const scale = HEAD_MODEL_TARGET_HEIGHT / size.y;
+  geo.scale(scale, scale, scale);
+  geo.computeVertexNormals();
+  onReady(buildHeadLookup(geo));
+}
+
+/* Load the scanned head model (GLB). Normally fetched from HEAD_MODEL_URL,
+   but falls back to a base64 blob on window.__HEAD_MODEL_BASE64__ (parsed
+   directly, no fetch) for static hosts that can't serve a .glb file by URL. */
 function loadScannedHead(onReady) {
-  new GLTFLoader().load(
-    HEAD_MODEL_URL,
-    (gltf) => {
-      gltf.scene.updateMatrixWorld(true);
-      let mesh = null;
-      gltf.scene.traverse((child) => {
-        if (!mesh && child.isMesh) mesh = child;
-      });
-      if (!mesh) return;
-      const geo = mesh.geometry.clone();
-      geo.applyMatrix4(mesh.matrixWorld);
-      geo.computeBoundingBox();
-      const box = geo.boundingBox;
-      const center = box.getCenter(new THREE.Vector3());
-      const size = box.getSize(new THREE.Vector3());
-      geo.translate(-center.x, -center.y, -center.z);
-      const scale = HEAD_MODEL_TARGET_HEIGHT / size.y;
-      geo.scale(scale, scale, scale);
-      geo.computeVertexNormals();
-      onReady(buildHeadLookup(geo));
-    },
-    undefined,
-    (err) => console.error("Failed to load scanned head model:", err)
-  );
+  const loader = new GLTFLoader();
+  const onError = (err) => console.error("Failed to load scanned head model:", err);
+  if (typeof window !== "undefined" && window.__HEAD_MODEL_BASE64__) {
+    const binary = atob(window.__HEAD_MODEL_BASE64__);
+    const bytes = new Uint8Array(binary.length);
+    for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
+    loader.parse(bytes.buffer, "", (gltf) => processScannedHead(gltf, onReady), onError);
+    return;
+  }
+  loader.load(HEAD_MODEL_URL, (gltf) => processScannedHead(gltf, onReady), undefined, onError);
 }
 
 /* ------------------------------------------------------------------ */
