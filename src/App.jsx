@@ -16,10 +16,14 @@ const HEAD_MODEL_TARGET_HEIGHT = 2.05;
 /* Constants / helpers                                                 */
 /* ------------------------------------------------------------------ */
 
+/* anchor.phi is measured from the back of the head (the +π puts nape/
+   middle/over on the occiput instead of the face — harmless on the old
+   featureless sphere, but they'd otherwise sit on the forehead/chin of
+   the scanned head model). */
 const SECTIONS = [
-  { id: "nape", label: "ネープ", jp: "襟足", anchor: { theta: Math.PI * 0.92, phi: Math.PI * 0.02 } },
-  { id: "middle", label: "ミドル", jp: "中間", anchor: { theta: Math.PI * 0.62, phi: Math.PI * 0.0 } },
-  { id: "over", label: "オーバー", jp: "頭頂", anchor: { theta: Math.PI * 0.28, phi: Math.PI * 0.0 } },
+  { id: "nape", label: "ネープ", jp: "襟足", anchor: { theta: Math.PI * 0.92, phi: Math.PI * 1.02 } },
+  { id: "middle", label: "ミドル", jp: "中間", anchor: { theta: Math.PI * 0.62, phi: Math.PI * 1.0 } },
+  { id: "over", label: "オーバー", jp: "頭頂", anchor: { theta: Math.PI * 0.28, phi: Math.PI * 1.0 } },
   { id: "side", label: "サイド", jp: "側頭", anchor: { theta: Math.PI * 0.55, phi: Math.PI * 0.48 } },
 ];
 
