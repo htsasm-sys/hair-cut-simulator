@@ -6,7 +6,7 @@ import {
   Scissors, Sparkles, Layers, User, Wind, X, Check, RefreshCw,
 } from "lucide-react";
 
-const HEAD_MODEL_URL = "/models/head.glb";
+const HEAD_MODEL_URL = "./models/head.glb";
 /* Target vertical extent (in scene units) the scanned head model is
    normalized to, matching the footprint the rest of the scene (camera
    distance, panel width, grid) was tuned against. */
